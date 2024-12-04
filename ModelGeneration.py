@@ -36,7 +36,7 @@ columns = list(russian_speeches.columns)
 columns.insert(columns.index('President') + 1, columns.pop(columns.index('transcript')))
 russian_speeches = russian_speeches[columns]
 
-presidents = ['Vladimir Putin', 'Boris Yeltsin', 'Sergei Dorenko', 'Nikolai Svanidze', 'Mikhail Leontyev']
+presidents = ['Vladimir Putin', 'Boris Yeltsin', 'Dmitry Medvedev']
 
 def normalize_president_name(name):
     if not isinstance(name, str):  
