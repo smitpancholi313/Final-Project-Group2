@@ -1,0 +1,9 @@
+# Set text files to use LF endings
+*.txt text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Binary files should not have line-ending conversions
+*.safetensors binary
+*.jpg binary
+*.png binary
