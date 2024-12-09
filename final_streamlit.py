@@ -61,7 +61,7 @@ class SentenceTransformerWrapper:
 
 # Using the chroma database which was created earlier. Currently uses recursive character splitter
 embedding_function = SentenceTransformerWrapper(embedding_model)
-vectorstore_dir = "/home/ubuntu/Dev_nlp/project/presidential-speeches-rag/Final-Project-Group1/chromadb_combined_data"
+vectorstore_dir = "./chromadb_combined_data"
 
 chroma_db = Chroma(
     persist_directory=vectorstore_dir,
@@ -226,7 +226,7 @@ def main():
     )
 
     # Header image
-    st.image('url.jpeg', use_container_width=True, caption="The wisdom of U.S. Presidents at your fingertips!")
+    st.image('url.jpeg', use_container_width=True, caption="The wisdom of Presidents at your fingertips!")
 
     # Main title and description
     # -webkit - text - stroke: 1px white;
@@ -235,7 +235,7 @@ def main():
         <div style="text-align: center; font-family: 'Arial', sans-serif; color: #B2BEB5;">
             <h1 style="font-size: 3em; font-weight: bold;">Talk to a President!!!</h1>
             <p style="font-size: 1.2em;">
-                Welcome! Dive into the wisdom of U.S. Presidents. Ask questions like:
+                Welcome! Dive into the wisdom of Presidents. Ask questions like:
             </p>
         </div>
         """,
@@ -421,10 +421,9 @@ def main():
             summarized_answer = summarize_response(response)
             st.write(summarized_answer)
             st.subheader("Sentiment (Top Emotions)")
-            sentiment = display_sentiment_meter(response)
-            st.write(sentiment)
+            display_sentiment_meter(response)
             st.subheader("Named Entities")
-            ner_entities = extract_named_entities(response)
+            extract_named_entities(response)
 
 
 if __name__ == "__main__":
