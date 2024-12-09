@@ -7,23 +7,15 @@ import torch
 import pandas as pd
 from datetime import datetime, timedelta
 
-# Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 st.sidebar.text(f"Using device: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
-
-
-# Load data
 filepath1 = "speeches.xlsx"
 filepath2 = "speeches_russian_PM.xlsx"
-
 data1 = pd.read_excel(filepath1)
 data2 = pd.read_excel(filepath2)
 data2 = data2.rename(columns={"transcript_filtered": "transcript"})
-
 data = pd.concat([data1, data2], ignore_index=True)
 data['transcript'] = data['transcript'].fillna("").astype(str)
-
-# Load models
 output_dir = "./fine_tuned_president_20_epochs"
 fine_tuned_model = GPT2LMHeadModel.from_pretrained(output_dir).to(device)
 fine_tuned_tokenizer = GPT2Tokenizer.from_pretrained(output_dir)
@@ -42,7 +34,6 @@ summarizer = pipeline("summarization", model="facebook/bart-large-cnn", device=0
 sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english",
                               device=0 if torch.cuda.is_available() else -1)
 
-# Preprocess data
 chunk_size = 100
 chunks = []
 
@@ -54,8 +45,6 @@ for speech in data['transcript']:
 vectorizer = TfidfVectorizer(stop_words='english')
 tfidf_matrix = vectorizer.fit_transform(chunks)
 
-
-# Helper functions
 def get_most_relevant_chunk(question, top_n=2, similarity_threshold=0.5):
     question_vector = vectorizer.transform([question])
     similarities = cosine_similarity(question_vector, tfidf_matrix)
@@ -106,11 +95,8 @@ def analyze_sentiment(response):
     sentiment = sentiment_analyzer(response)
     return sentiment[0]
 
-
-# Streamlit App Layout
 st.title("Presidential Speeches NLP App")
 st.write("Ask questions based on the speeches dataset.")
-
 question = st.text_input("Enter your question:")
 
 if question:
@@ -120,7 +106,6 @@ if question:
     summarized_answer = summarize_response(answer)
     sentiment = analyze_sentiment(summarized_answer)
 
-    # Display results
     st.subheader("Answer")
     st.write(answer)
 
