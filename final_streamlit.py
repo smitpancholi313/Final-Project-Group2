@@ -95,12 +95,30 @@ def summarize_response(response):
 sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english",
                               device=0 if torch.cuda.is_available() else -1)
 
-def analyze_sentiment(response):
+
+def display_sentiment_meter(response):
     """
-    Perform sentiment analysis on the response.
+    Display a sentiment emoji (happy for positive, sad for negative) with size based on the sentiment score.
     """
-    sentiment = sentiment_analyzer(response)
-    return sentiment[0]
+    # Perform sentiment analysis
+    sentiment_result = sentiment_analyzer(response)
+
+    # Get the sentiment score and label
+    score = sentiment_result[0]['score']
+    label = sentiment_result[0]['label']
+
+    # Scale emoji size based on the sentiment score (larger for stronger sentiment)
+    emoji_size = int(50 + 150 * score)  # Scale emoji size from 50 to 200 based on score
+
+    # Choose emoji based on sentiment
+    emoji = "😊" if label == 'POSITIVE' else "😞"
+
+    # Display the emoji with the appropriate size
+    st.markdown(f"<h1 style='text-align: center; font-size: {emoji_size}px;'>{emoji}</h1>", unsafe_allow_html=True)
+
+    # Display the sentiment label and score
+    st.write(f"Sentiment: {label}")
+    st.write(f"Score: {score:.2f}")
 
 ###############################
 # Named Entity Recognition (NER)
@@ -116,7 +134,7 @@ ner_pipeline = pipeline(
 def extract_named_entities(text):
     """
     Extract Named Entities (NER) from the text, deduplicate them, and generate a word cloud
-    with colors based on the entity types.
+    with colors based on the entity types, including a legend for the entity types.
     """
     ner_results = ner_pipeline(text)
 
@@ -159,14 +177,23 @@ def extract_named_entities(text):
         background_color="black"
     ).generate_from_frequencies(word_frequencies)
 
-    # Apply custom color function
-    plt.figure(figsize=(12, 6))
-    plt.imshow(wordcloud.recolor(color_func=color_func), interpolation="bilinear")
-    plt.axis("off")
-    plt.title("Named Entity Word Cloud", fontsize=16, color="white")
+    # Create legend
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Display the word cloud
+    ax.imshow(wordcloud.recolor(color_func=color_func), interpolation="bilinear")
+    ax.axis("off")
+
+    # Add legend
+    handles = []
+    for entity_type, color in entity_color_map.items():
+        handles.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, markersize=10, label=entity_type))
+
+    ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1, 0.5), title="Entity Types")
+    ax.set_title("Named Entity Word Cloud", fontsize=16, color="white")
 
     # Display the plot in Streamlit
-    st.pyplot(plt)
+    st.pyplot(fig)
 
 ###############################
 # Chat History Functionality
@@ -358,13 +385,13 @@ def main():
 
                 summarized_answer = summarize_response(answer)
 
-                sentiment = analyze_sentiment(answer)
+                # sentiment = display_sentiment_meter(answer)
 
-                ner_entities = extract_named_entities(answer)
+                # ner_entities = extract_named_entities(answer)
 
-                chat_history[question] = (datetime.now(), (answer, summarized_answer, sentiment, ner_entities))
+                chat_history[question] = (datetime.now(), (answer, summarized_answer))
 
-                return answer, summarized_answer, sentiment
+                return answer, summarized_answer
 
             response = get_response(user_question)  # Use custom model
             if isinstance(response, tuple):
@@ -375,8 +402,7 @@ def main():
                 summarized_answer = response[1]
                 st.write(summarized_answer)
                 st.subheader("Sentiment (Top Emotions)")
-                sentiment = response[2]
-                st.write(sentiment)
+                display_sentiment_meter(answer)
                 st.subheader("Named Entities")
                 extract_named_entities(answer)
 
@@ -395,7 +421,7 @@ def main():
             summarized_answer = summarize_response(response)
             st.write(summarized_answer)
             st.subheader("Sentiment (Top Emotions)")
-            sentiment = analyze_sentiment(response)
+            sentiment = display_sentiment_meter(response)
             st.write(sentiment)
             st.subheader("Named Entities")
             ner_entities = extract_named_entities(response)
