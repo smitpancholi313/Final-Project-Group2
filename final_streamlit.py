@@ -1,15 +1,14 @@
 import streamlit as st
-from langchain.embeddings import SentenceTransformerEmbeddings
-from langchain_pinecone import PineconeVectorStore
 from groq import Groq
-from pinecone import Pinecone, ServerlessSpec
 import pandas as pd
-from sklearn.metrics.pairwise import cosine_similarity
 from transformers import GPT2LMHeadModel, GPT2Tokenizer, pipeline
 import torch
 import re
 from datetime import datetime, timedelta
 from sentence_transformers import SentenceTransformer
+from langchain_chroma import Chroma
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
 
 # Model Setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -26,20 +25,11 @@ data = pd.concat([data1, data2], ignore_index=True)
 data['transcript'] = data['transcript'].fillna("").astype(str)
 
 
-def get_relevant_excerpts(user_question, docsearch):
-    relevent_docs = docsearch.similarity_search(user_question)
-    return '\n\n------------------------------------------------------\n\n'.join(
-        [doc.page_content for doc in relevent_docs[:3]]
-    )
-
-def presidential_speech_chat_completion(client, model, user_question, relevant_excerpts, additional_context):
+def presidential_speech_chat_completion(client, model, user_question, relevant_excerpts):
     system_prompt = '''
     Given the user's question and relevant excerpts from presidential speeches, answer the question thinking like a president. 
-    React as if you are presindent yourself.
+    React as if you are the presindent yourself.
     '''
-
-    if additional_context:
-        system_prompt += f"\nThe user has provided this additional context:\n{additional_context}"
 
     chat_completion = client.chat.completions.create(
         messages=[
@@ -54,86 +44,256 @@ def presidential_speech_chat_completion(client, model, user_question, relevant_e
 
     return chat_completion.choices[0].message.content
 
+
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+
+class SentenceTransformerWrapper:
+    def __init__(self, model):
+        self.model = model
+
+    def embed_documents(self, texts):
+        return self.model.encode(texts, convert_to_tensor=True).tolist()
+
+    def embed_query(self, text):
+        return self.model.encode(text, convert_to_tensor=True).tolist()
+
+
+# Using the chroma database which was created earlier. Currently uses recursive character splitter
+embedding_function = SentenceTransformerWrapper(embedding_model)
+vectorstore_dir = "/home/ubuntu/Dev_nlp/project/presidential-speeches-rag/Final-Project-Group1/chromadb_combined_data"
+
+chroma_db = Chroma(
+    persist_directory=vectorstore_dir,
+    embedding_function=embedding_function
+)
+
+
+def get_relevant_context(question, top_n=5):
+    docs = chroma_db.similarity_search(question, k=top_n)
+    combined_context = " ".join([doc.page_content for doc in docs])
+    return combined_context
+
+##############################
+# Summarization
+##############################
+
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn",
+                      device=0 if torch.cuda.is_available() else -1)
+
+def summarize_response(response):
+    if len(response.split()) <= 20:
+        return response
+
+    summarized = summarizer(response, max_length=75, min_length=10, do_sample=False)
+    return summarized[0]['summary_text']
+
+###############################
+# Sentiment Analysis
+###############################
+
+sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english",
+                              device=0 if torch.cuda.is_available() else -1)
+
+def analyze_sentiment(response):
+    """
+    Perform sentiment analysis on the response.
+    """
+    sentiment = sentiment_analyzer(response)
+    return sentiment[0]
+
+###############################
+# Named Entity Recognition (NER)
+###############################
+
+ner_pipeline = pipeline(
+    "ner",
+    model="dslim/bert-base-NER",
+    device=0 if torch.cuda.is_available() else -1,
+    aggregation_strategy="simple"
+)
+
+def extract_named_entities(text):
+    """
+    Extract Named Entities (NER) from the text, deduplicate them, and generate a word cloud
+    with colors based on the entity types.
+    """
+    ner_results = ner_pipeline(text)
+
+    # Map entity types to colors
+    entity_color_map = {
+        "PER": "#3498db",  # Person
+        "LOC": "#2ecc71",  # Location
+        "ORG": "#e74c3c",  # Organization
+        "MISC": "#9b59b6",  # Miscellaneous
+        "DEFAULT": "#95a5a6"  # Default color
+    }
+
+    # Prepare word frequencies and colors
+    word_frequencies = {}
+    word_colors = {}
+    seen = set()
+
+    for entity in ner_results:
+        word = entity['word'].strip()
+        if word.startswith("##") or "#" in word or word in seen:
+            continue
+        seen.add(word)
+
+        # Get the entity type and score
+        entity_type = entity['entity_group'] if 'entity_group' in entity else entity['entity']
+        score = entity['score']
+
+        # Add word frequency and color
+        word_frequencies[word] = score  # Use score as frequency
+        word_colors[word] = entity_color_map.get(entity_type, entity_color_map["DEFAULT"])
+
+    # Custom color function for word cloud
+    def color_func(word, **kwargs):
+        return word_colors.get(word, "#95a5a6")  # Default gray if not found
+
+    # Generate word cloud
+    wordcloud = WordCloud(
+        width=800,
+        height=400,
+        background_color="black"
+    ).generate_from_frequencies(word_frequencies)
+
+    # Apply custom color function
+    plt.figure(figsize=(12, 6))
+    plt.imshow(wordcloud.recolor(color_func=color_func), interpolation="bilinear")
+    plt.axis("off")
+    plt.title("Named Entity Word Cloud", fontsize=16, color="white")
+
+    # Display the plot in Streamlit
+    st.pyplot(plt)
+
+###############################
+# Chat History Functionality
+###############################
+
+chat_history = {}
+
+def clean_chat_history():
+    """
+    Remove entries in chat history that are older than 15 minutes.
+    """
+    current_time = datetime.now()
+    fifteen_minutes_ago = current_time - timedelta(minutes=15)
+    keys_to_remove = [key for key, (timestamp, _) in chat_history.items() if
+                      timestamp < fifteen_minutes_ago]
+    for key in keys_to_remove:
+        del chat_history[key]
+
+
 # Streamlit UI
 def main():
     groq_api_key = "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"
-    pinecone_api_key = "pcsk_2ZLJUA_MTwTAcBUJBfmZASEWfWjuhXvEjQPkCMurzPCXwR9VsCzut6nM3a3Q4UcSyfSXnj"
-
-    # Initialize Pinecone
-    pc = Pinecone(api_key=pinecone_api_key)
-    index_name = "presidential-speeches"
-    if index_name not in pc.list_indexes().names():
-        pc.create_index(
-            name=index_name,
-            dimension=384,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        )
-    embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
-    docsearch = PineconeVectorStore(index_name=index_name, embedding=embedding_function,
-                                    pinecone_api_key=pinecone_api_key)
 
     client = Groq(api_key=groq_api_key)
+    st.set_page_config(
+        page_title="President Q&A 🤖",
+        page_icon="🤖",
+        layout="centered",
+        initial_sidebar_state="expanded"
+    )
 
-    st.image('groqcloud_darkmode.png')
-    st.title("Presidential Speeches RAG")
-    st.markdown("""
-        Welcome! Ask questions about U.S. presidents, like "What were George Washington's views on democracy?" or "What did Abraham Lincoln say about national unity?". 
-        The app matches your question to relevant excerpts from presidential speeches and generates a response using a pre-trained model.
-    """)
+    # Header image
+    st.image('url.jpeg', use_container_width=True, caption="The wisdom of U.S. Presidents at your fingertips!")
 
-    additional_context = st.sidebar.text_input('Additional summarization context (optional):')
-    model = st.sidebar.selectbox('Choose a model', ['llama3-8b-8192', 'mixtral-8x7b-32768', 'gemma-7b-it',
-                                                    './fine_tuned_president_20_epochs'])
-    user_question = st.text_input("Ask a question about a US president:")
+    # Main title and description
+    # -webkit - text - stroke: 1px white;
+    st.markdown(
+        """
+        <div style="text-align: center; font-family: 'Arial', sans-serif; color: #B2BEB5;">
+            <h1 style="font-size: 3em; font-weight: bold;">Talk to a President!!!</h1>
+            <p style="font-size: 1.2em;">
+                Welcome! Dive into the wisdom of U.S. Presidents. Ask questions like:
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Sidebar for model selection
+    with st.sidebar:
+        st.markdown(
+            """
+            <div style="text-align: center; font-family: 'Arial', sans-serif;">
+                <h3 style="color: #95A5A6;">⚙️ Choose Your Model</h3>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        model = st.selectbox(
+            'Select a Model',
+            ['llama3-8b-8192', 'mixtral-8x7b-32768', 'gemma-7b-it', 'fine_tuned_president_model']
+        )
+        st.markdown(
+            """
+            <p style="text-align: center; color: #95A5A6; font-size: 0.9em;">
+                Tip: Choose the <strong>"fine_tuned_president_model"</strong> for tuned answers on presidential topics!
+            </p>
+            """,
+            unsafe_allow_html=True
+        )
+
+
+    user_question = st.text_input(
+        "Your question:",
+        placeholder="e.g., What did John F. Kennedy emphasize in his inaugural speech?",
+        help="Ask about any U.S. President's views, quotes, or policies!"
+    )
+
+    # Placeholder for the AI response
+    if user_question:
+        st.markdown(
+            """
+            <div style="margin-top: 30px; padding: 20px; background: #D5DBDB; border-radius: 10px;">
+                <h3 style="color: #16A085; font-family: 'Arial', sans-serif; text-align: center;">🤔 AI Response</h3>
+                <p style="text-align: justify; color: #2C3E50;">
+                    Here is your AI-generated answer to the question!
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            """
+            <div style="margin-top: 30px; padding: 20px; background: #F2F3F4; border-radius: 10px;">
+                <h3 style="color: #E74C3C; font-family: 'Arial', sans-serif; text-align: center;">⏳ Waiting for Your Question</h3>
+                <p style="text-align: center; color: #7F8C8D;">
+                    Type a question above to get started!
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
     if user_question:
-        if model == './fine_tuned_president_20_epochs':
-            output_dir = "./fine_tuned_president_20_epochs"
+        if model == 'fine_tuned_president_model':
+            output_dir = "./fine_tuned_president_5_epochs"
             fine_tuned_model = GPT2LMHeadModel.from_pretrained(output_dir).to(device)
             fine_tuned_tokenizer = GPT2Tokenizer.from_pretrained(output_dir)
+
+            fine_tuned_generator = pipeline(
+                "text-generation",
+                model=fine_tuned_model,
+                tokenizer=fine_tuned_tokenizer,
+                device=0 if torch.cuda.is_available() else -1
+            )
 
             if fine_tuned_tokenizer.pad_token is None:
                 fine_tuned_tokenizer.add_special_tokens({'pad_token': '<|pad|>'})
                 fine_tuned_model.resize_token_embeddings(len(fine_tuned_tokenizer))
 
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-
-            chunk_size = 100
-            chunks = []
-
-            for speech in data['transcript']:
-                words = speech.split()
-                for i in range(0, len(words), chunk_size):
-                    chunks.append(" ".join(words[i:i + chunk_size]))
-
-            chunk_embeddings_np = model.encode(chunks, convert_to_tensor=False)
 
             def clean_text(text):
                 text = re.sub(r'\s+', ' ', text.strip())
                 text = re.sub(r'[^\x00-\x7F]+', '', text)
                 text = re.sub(r'(?:(\b\w+\b)\s+)+\1\b', r'\1', text)
                 return text
-
-            def get_top_chunks(query, n_top=5):
-                query_embedding = model.encode([query], convert_to_tensor=False)
-                scores = cosine_similarity(query_embedding, chunk_embeddings_np)[0]
-                ranked_chunks = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
-                top_chunks = [clean_text(chunk) for _, chunk in ranked_chunks[:n_top]]
-                top_score = ranked_chunks[0][0] if ranked_chunks else 0.0
-
-                return top_chunks, top_score
-
-            def get_most_relevant_chunk(question, top_n=5, similarity_threshold=0.2):
-                """
-                Retrieve the top `top_n` most relevant chunks for the given question.
-                """
-                top_chunks, top_score = get_top_chunks(question, n_top=top_n)
-                if not top_chunks or len(top_chunks) == 0 or top_score < similarity_threshold:
-                    return None, False
-
-                combined_context = " ".join(set(top_chunks))
-                return combined_context[:1000], True
 
             def remove_repeated_phrases(response):
                 """
@@ -149,122 +309,31 @@ def main():
                         seen.add(cleaned_sentence)
                 return '. '.join(filtered_sentences)
 
+
             def answer_question(question):
-                relevant_context, is_relevant = get_most_relevant_chunk(question)
-                if not is_relevant:
-                    return "I'm sorry, I couldn't find a direct match in the speeches. Please try rephrasing your question or asking something more specific."
+                relevant_context = get_relevant_context(question)
+                # if not is_relevant:
+                #     return "I'm sorry, I couldn't find a direct match in the speeches. Please try rephrasing your question or asking something more specific."
 
                 truncated_context = relevant_context[:1000]
                 prompt = (
                     f"The following context is strictly derived from the speeches dataset:\n\n"
                     f"Context: {truncated_context}\n\n"
-                    f"Based only on this context, answer the following question:\n"
+                    f"Based on this context, answer the following question:\n"
                     f"Question: {question}\nAnswer:"
                 )
 
                 print(f"Prompt length: {len(prompt)}")
 
-                encoding = fine_tuned_tokenizer(
+                response = fine_tuned_generator(
                     prompt,
-                    return_tensors='pt',
-                    padding=True,
+                    max_new_tokens=300,
+                    num_return_sequences=1,
+                    pad_token_id=fine_tuned_tokenizer.eos_token_id,
                     truncation=True
-                ).to(device)
-
-                with torch.no_grad():
-                    output = fine_tuned_model.generate(
-                        input_ids=encoding["input_ids"],
-                        attention_mask=encoding["attention_mask"],
-                        max_new_tokens=256,
-                        temperature=0.7,
-                        do_sample=True,
-                        repetition_penalty=1.2,
-                        no_repeat_ngram_size=3,
-                        pad_token_id=fine_tuned_tokenizer.pad_token_id
-                    )
-
-                response = fine_tuned_tokenizer.decode(output[0], skip_special_tokens=True)
-                if 'Answer:' in response:
-                    response = response.split('Answer:')[-1].strip()
-                response = remove_repeated_phrases(response)
+                )
+                response = response[0]['generated_text'].split('Answer:')[-1].strip()
                 return response
-
-            ##############################
-            # Summarization
-            ##############################
-
-            summarizer = pipeline("summarization", model="facebook/bart-large-cnn",
-                                  device=0 if torch.cuda.is_available() else -1)
-
-            def summarize_response(response):
-                if len(response.split()) <= 20:
-                    return response
-
-                summarized = summarizer(response, max_length=75, min_length=10, do_sample=False)
-                return summarized[0]['summary_text']
-
-            ###############################
-            # Sentiment Analysis
-            ###############################
-
-            sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english",
-                                          device=0 if torch.cuda.is_available() else -1)
-
-            def analyze_sentiment(response):
-                """
-                Perform sentiment analysis on the response.
-                """
-                sentiment = sentiment_analyzer(response)
-                return sentiment[0]
-
-            ###############################
-            # Named Entity Recognition (NER)
-            ###############################
-
-            ner_pipeline = pipeline(
-                "ner",
-                model="dslim/bert-base-NER",
-                device=0 if torch.cuda.is_available() else -1,
-                aggregation_strategy="simple"
-            )
-
-            def extract_named_entities(text):
-                """
-                Extract Named Entities (NER) from the text.
-                Deduplicate entities and return a clean list.
-                """
-                ner_results = ner_pipeline(text)
-                entities = []
-                seen = set()
-                for entity in ner_results:
-                    word = entity['word'].strip()
-                    if word.startswith("##") or "#" in word:
-                        continue
-                    if word not in seen:
-                        entities.append({
-                            "entity": entity['entity_group'] if 'entity_group' in entity else entity['entity'],
-                            "word": word,
-                            "score": entity['score']
-                        })
-                        seen.add(word)
-                return entities
-
-            ###############################
-            # Chat History Functionality
-            ###############################
-
-            chat_history = {}
-
-            def clean_chat_history():
-                """
-                Remove entries in chat history that are older than 15 minutes.
-                """
-                current_time = datetime.now()
-                fifteen_minutes_ago = current_time - timedelta(minutes=15)
-                keys_to_remove = [key for key, (timestamp, _) in chat_history.items() if
-                                  timestamp < fifteen_minutes_ago]
-                for key in keys_to_remove:
-                    del chat_history[key]
 
             ###############################
             # Chat Response Handling
@@ -281,9 +350,9 @@ def main():
                     print("\nResponse from history!")
                     return response
 
-                relevant_context, is_relevant = get_most_relevant_chunk(question)
-                if not is_relevant:
-                    return "Please ask something directly related to the speeches."
+                # relevant_context, is_relevant = get_relevant_context(question)
+                # if not is_relevant:
+                #     return "Please ask something directly related to the speeches."
 
                 answer = answer_question(question)
 
@@ -295,28 +364,41 @@ def main():
 
                 chat_history[question] = (datetime.now(), (answer, summarized_answer, sentiment, ner_entities))
 
-                return answer, summarized_answer, sentiment, ner_entities
+                return answer, summarized_answer, sentiment
 
             response = get_response(user_question)  # Use custom model
             if isinstance(response, tuple):
-                answer, summarized_answer, sentiment, ner_entities = response
+                answer = response[0]
                 st.subheader("President's Answer")
                 st.write(answer)
                 st.subheader("Summarized Response")
+                summarized_answer = response[1]
                 st.write(summarized_answer)
                 st.subheader("Sentiment (Top Emotions)")
+                sentiment = response[2]
                 st.write(sentiment)
                 st.subheader("Named Entities")
-                st.write(ner_entities)
+                extract_named_entities(answer)
+
             else:
                 # If result is a string (no relevant context)
                 st.write(response)
 
         else:
-            relevant_excerpts = get_relevant_excerpts(user_question, docsearch)
-            response = presidential_speech_chat_completion(client, model, user_question, relevant_excerpts,
-                                                           additional_context)
+            # relevant_excerpts = get_relevant_excerpts(user_question, docsearch)
+            relevant_excerpts = get_relevant_context(user_question, 5)
+
+            response = presidential_speech_chat_completion(client, model, user_question, relevant_excerpts)
+            st.subheader("President's Answer")
             st.write(response)
+            st.subheader("Summarized Response")
+            summarized_answer = summarize_response(response)
+            st.write(summarized_answer)
+            st.subheader("Sentiment (Top Emotions)")
+            sentiment = analyze_sentiment(response)
+            st.write(sentiment)
+            st.subheader("Named Entities")
+            ner_entities = extract_named_entities(response)
 
 
 if __name__ == "__main__":
