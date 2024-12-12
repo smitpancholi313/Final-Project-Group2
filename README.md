@@ -6,7 +6,9 @@ This repository contains the codes to run the presidential chatbot. Please follo
 
 # Running the App
 
-## Option 1: Direct App Access 1. Download: Download the chroma_db folder “chromadb_combined_data” and the fine-tuned model folder “fine_tuned_president_5_epochs” to your project directory 2. Run the App: Run the “FinalStreamlitApp.py” Using the streamlit run command “streamlit run FinalStreamlitApp.py --server.address=0.0.0.0 --server.port=8888”. When viewing the app in the browser, replace localhost with the public ipv4
+## Option 1: Direct App Access 
+
+1. Download: Download the chroma_db folder “chromadb_combined_data” and the fine-tuned model folder “fine_tuned_president_5_epochs” to your project directory 2. Run the App: Run the “FinalStreamlitApp.py” Using the streamlit run command “streamlit run FinalStreamlitApp.py --server.address=0.0.0.0 --server.port=8888”. When viewing the app in the browser, replace localhost with the public ipv4
 
 ## Option 2: Fine-Tuning and Database Creation 
 
