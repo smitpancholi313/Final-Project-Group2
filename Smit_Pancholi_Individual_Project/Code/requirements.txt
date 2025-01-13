@@ -1,8 +1,0 @@
-numpy
-scikit-learn
-transformers
-torch
-pandas
-sentence-transformers
-chromadb
-
